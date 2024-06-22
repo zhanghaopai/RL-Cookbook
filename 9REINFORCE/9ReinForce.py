@@ -2,21 +2,17 @@
 策略梯度算法
 '''
 import gym
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
 from tqdm import tqdm
-import logging
-
 
 # 参数区
 learning_rate = 1e-3
 num_episodes = 1000
-hidden_dim = 128
 gamma = 0.98
 env_name = "CartPole-v0"
-play_mode="human"
-
+play_mode = "human"
 
 
 # 策略网络
@@ -29,7 +25,6 @@ class PolicyNet(torch.nn.Module):
     def forward(self, x):
         x = F.relu(self.fc1(x))
         return F.softmax(self.fc2(x), dim=1)
-
 
 
 class REINFORCE:
@@ -88,6 +83,7 @@ class REINFORCE:
             loss.backward()
         self.optimizer.step()  # 梯度下降
 
+
 def train(env, agent):
     return_list = []
     for i in range(10):
@@ -130,7 +126,6 @@ def train(env, agent):
                 pbar.update(1)
 
 
-
 def init_env(env_name, mode):
     '''
     初始化游戏环境
@@ -143,10 +138,9 @@ def init_env(env_name, mode):
     return env, state_dim, action_dim
 
 
-
 def main():
     env, state_dim, action_dim = init_env(env_name, play_mode)
-    agent=REINFORCE(state_dim, action_dim, learning_rate, gamma)
+    agent = REINFORCE(state_dim, action_dim, learning_rate, gamma)
     train(env, agent)
 
 
