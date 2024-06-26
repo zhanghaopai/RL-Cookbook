@@ -13,7 +13,7 @@ num_episodes = 1000
 gamma = 0.98
 lam = 0.95
 kl_constraint = 0.00005
-env_name = "Pendulum-v1"
+env_name = "CartPole-v0"
 play_mode = "rgb_array"
 
 
@@ -151,7 +151,7 @@ class TRPO:
 
     def update(self, trajectory):
         '''
-        根据trajectory，优化策略网络
+        根据trajectory，优化策略和价值网络
         :param transition_dict:
         :return:
         '''
@@ -199,7 +199,7 @@ def train(env, agent):
                 # 玩一局游戏，得到一个trajectory，直到游戏结束
                 while not done:
                     action = agent.take_action(state)
-                    next_state, reward, done, _, _ = env.step([action])
+                    next_state, reward, done, _, _ = env.step(action)
                     # 记录动作
                     trajectory.push(state, action, reward, done, next_state)
                     state = next_state
@@ -224,7 +224,7 @@ def init_env(env_name, mode):
     '''
     env = gym.make(env_name, render_mode=mode)
     state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
+    action_dim = env.action_space.n
     return env, state_dim, action_dim
 
 
