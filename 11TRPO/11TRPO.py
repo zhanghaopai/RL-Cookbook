@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
+import logging
 
 # 参数区
 learning_rate = 1e-3
@@ -155,11 +156,11 @@ class TRPO:
         :param transition_dict:
         :return:
         '''
-        state_list = trajectory.state
-        action_list = trajectory.action
-        reward_list = trajectory.reward
-        next_state_list = trajectory.next_state
-        done_list = trajectory.done
+        state_list = torch.tensor(trajectory.state, dtype=torch.float)
+        action_list = torch.tensor(trajectory.action, dtype=torch.float)
+        reward_list = torch.tensor(trajectory.reward, dtype=torch.float)
+        next_state_list = torch.tensor(trajectory.next_state, dtype=torch.float)
+        done_list = torch.tensor(trajectory.done, dtype=torch.float)
 
         td_target = reward_list + self.gamma * self.value_net(next_state_list) * (1 - done_list)
         td_delta = td_target - self.value_net(state_list)
