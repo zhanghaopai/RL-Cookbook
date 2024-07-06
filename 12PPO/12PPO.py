@@ -14,11 +14,12 @@ import matplotlib.pyplot as plt
 class PolicyNet(torch.nn.Module):
     def __init__(self, state_dim, action_dim):
         super(PolicyNet, self).__init__()
-        self.fc1 = torch.nn.Linear(state_dim, 128)
-        self.fc2 = torch.nn.Linear(128, action_dim)
+        self.fc1 = torch.nn.Linear(state_dim, 64)
+        self.fc2 = torch.nn.Linear(64, action_dim)
+
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
+        x = F.leaky_relu(self.fc1(x))
         return F.softmax(self.fc2(x), dim=0)
 
 
@@ -26,11 +27,11 @@ class PolicyNet(torch.nn.Module):
 class ValueNet(torch.nn.Module):
     def __init__(self, state_dim):
         super(ValueNet, self).__init__()
-        self.fc1 = torch.nn.Linear(state_dim, 128)
-        self.fc2 = torch.nn.Linear(128, 1)
+        self.fc1 = torch.nn.Linear(state_dim, 64)
+        self.fc2 = torch.nn.Linear(64, 1)
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
+        x = F.leaky_relu(self.fc1(x))
         return self.fc2(x)
 
 
@@ -86,7 +87,7 @@ class PPO:
         :return:
         '''
         # state转换为tensor
-        state = torch.tensor(np.array(state), dtype=torch.float)
+        state = torch.tensor(state, dtype=torch.float)
         # 获得当前状态下的概率分布
         probs = self.policy_net(state)
         # 归一化处理，得到动作的类别分布
@@ -122,7 +123,7 @@ class PPO:
             # 估计2
             surr2 = torch.clamp(ratio, 1-eps, 1+eps)*advantage_list
             policy_loss = torch.mean(-torch.min(surr1, surr2))
-            value_loss = F.mse_loss(self.value_net(state_list), td_target.detach())
+            value_loss = torch.mean(F.mse_loss(self.value_net(state_list), td_target.detach()))
             self.policy_optimizer.zero_grad()
             self.value_optimizer.zero_grad()
             policy_loss.requires_grad_(True)
@@ -137,40 +138,42 @@ class PPO:
 
 def train(env, agent):
     return_list = []
-    for i in range(10):
-        with tqdm(total=int(num_episodes / 10), desc='Iteration %d' % i) as pbar:
-            for i_episode in range(int(num_episodes / 10)):
-                # trajectory的总回报
-                episode_reward = 0
+    for i in range(epochs):
+        episode = int(num_episodes / epochs)
+        with tqdm(total=episode, desc='Iteration %d' % int(i+1)) as pbar:
+            for i_episode in range(episode):
                 # trajectory的字典
                 trajectory = Trajectory()
                 state = env.reset()
-                # 初始状态
-                state = state[0]
                 done = False
                 # 玩一局游戏，得到一个trajectory，直到游戏结束
                 while not done:
                     action = agent.take_action(state)
-                    next_state, reward, done, _, _ = env.step(action)
+                    next_state, reward, done, _ = env.step(action)
                     # 记录动作
                     trajectory.push(state, action, reward, done, next_state)
                     state = next_state
-                    episode_reward += reward
-                return_list.append(episode_reward)
+                # 将本局游戏的总reward放入return_list
+                return_list.append(np.sum(trajectory.reward))
                 agent.update(trajectory)
                 if (i_episode + 1) % 10 == 0:
+                    # 每玩10局打印
                     pbar.set_postfix({
                         'episode':
-                            '%d' % (num_episodes / 10 * i + i_episode + 1),
+                            '%d' % (episode * i + i_episode + 1),
                         'return':
-                            '%.3f' % np.mean(return_list)
+                            '%.3f' % np.mean(return_list[-10:])
                     })
                     pbar.update(10)
     return return_list
 
 def draw(return_list):
-    episodes_list = list(range(len(return_list)))
-    plt.plot(episodes_list, return_list)
+    smooth_list=[]
+    for i in range(0, len(return_list), 10):
+        smooth_list.append(np.mean(return_list[i:i+10]))
+
+    episodes_list = list(range(len(smooth_list)))
+    plt.plot(episodes_list, smooth_list)
     plt.xlabel('Episodes')
     plt.ylabel('Returns')
     plt.title('PPO on {}'.format(env_name))
@@ -202,20 +205,24 @@ def init_env(env_name, mode):
     :return:
     '''
     env = gym.make(env_name, render_mode=mode)
+    env.seed(0)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
     return env, state_dim, action_dim
 
 
 # 参数区
-plr = 1e-3
-vlr = 1e-2
-num_episodes = 1000
-gamma = 0.98
+plr = 5e-5
+vlr = 5e-4
+gamma = 0.96
 lam = 0.95
 eps = 0.2
+
+num_episodes = 2500
+epochs = 50
+
 env_name = "CartPole-v0"
-play_mode = "human"
+play_mode = "rgb_array"
 
 
 def main():
