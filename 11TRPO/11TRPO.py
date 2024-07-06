@@ -8,15 +8,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
-
-# 参数区
-learning_rate = 1e-3
-num_episodes = 1000
-gamma = 0.98
-lam = 0.95
-kl_constraint = 0.00005
-env_name = "CartPole-v0"
-play_mode = "rgb_array"
+import matplotlib.pyplot as plt
 
 
 # 策略网络
@@ -27,7 +19,7 @@ class PolicyNet(torch.nn.Module):
         self.fc2 = torch.nn.Linear(64, action_dim)
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
+        x = F.leaky_relu(self.fc1(x))
         return F.softmax(self.fc2(x), dim=1)
 
 
@@ -39,7 +31,7 @@ class ValueNet(torch.nn.Module):
         self.fc2 = torch.nn.Linear(64, 1)
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
+        x = F.leaky_relu(self.fc1(x))
         return self.fc2(x)
 
 
@@ -120,6 +112,31 @@ class TRPO:
         advantage_list.reverse()
         return torch.tensor(advantage_list, dtype=torch.float)
 
+    def hessian_matrix_vector_product(self, states, old_action_dists, vector):
+        """
+        计算hessian矩阵和一个向量v的乘积（Hv）：公式见《动手学强化学习》第11章TRPO算法的11.4节最后一个公式
+        这里要计算的Hessian矩阵：策略之间平均KL距离的的Hessian矩阵
+        :param states: 新的策略下所历经的各种状态
+        :param old_action_dists:
+        :param vector: 列向量v
+        :return:
+        """
+        new_action_dists = torch.distributions.Categorical(self.policy_net(states))
+        # 计算新策略和旧策略的KL散度的平均值
+        kl = torch.mean(torch.distributions.kl.kl_divergence(old_action_dists, new_action_dists))
+        # 计算KL散度关于旧策略的参数θ的梯度值，并把结果加入到计算图中
+        kl_grad = torch.autograd.grad(kl, self.policy_net.parameters(), create_graph=True)
+        # 把KL散度的梯度值转置
+        kl_grad_vector = torch.cat([grad.view(-1) for grad in kl_grad])
+        # 计算KL散度的梯度值转置*v
+        kl_grad_vector_product = torch.dot(kl_grad_vector, vector)
+        # 计算KL散度的梯度值转置*v 关于旧策略参数θ的梯度值
+        grad2 = torch.autograd.grad(kl_grad_vector_product, self.policy_net.parameters())
+        # 把输出结果转换成列向量？
+        grad2_vector = torch.cat([grad.view(-1) for grad in grad2])
+        # print(grad2_vector.shape) # shape (898)
+        return grad2_vector
+
     def surrogate_loss(self, old_log_probs, log_probs, advantage):
         '''
         代理损失函数：一般是指当目标函数非凸、不连续时，数学性质不好，优化起来比较复杂，这时候需要使用其他的性能较好的函数进行替换。
@@ -131,28 +148,23 @@ class TRPO:
         ratio = torch.exp(log_probs - old_log_probs)
         return torch.mean(ratio * advantage)
 
-    def conjugate_gradients(self, Ax, b, cg_iter: 10):
-        '''
-        conjugate graient algorithm 共轭梯度法求解方程,计算x=h^{-1}g的值
-        :param Ax:
-        :param b:
-        :return:
-        '''
-        x = np.zeros_like(b)  # 初始化x
-        r = b.copy()  # 初始化梯度值
-        p = r.copy()  # 初始化梯度更新方向
-        rdotr = np.dot(r, r)  # r的转置乘r的结果
-        for _ in range(cg_iter):
-            z = Ax(p)
-            alpha = rdotr / np.dot(p, z)  # 计算步长
-            x += alpha * p  # 更新迭代值
-            r -= alpha * z  # 更新梯度
-            new_rdotr = np.dot(r, r)  # r'
-            if new_rdotr < 1e-8:
+    def conjugate_gradient(self, grad, states, old_action_dists):  # 共轭梯度法求解方程
+        x = torch.zeros_like(grad)
+        r = grad.clone()
+        p = grad.clone()
+        rdotr = torch.dot(r, r)
+        for i in range(10):  # 共轭梯度主循环
+            Hp = self.hessian_matrix_vector_product(states, old_action_dists,
+                                                    p)
+            alpha = rdotr / torch.dot(p, Hp)
+            x += alpha * p
+            r -= alpha * Hp
+            new_rdotr = torch.dot(r, r)
+            if new_rdotr < 1e-10:
                 break
-            beta = new_rdotr / rdotr  # 计算组合系数
-            p = r + beta * p  # 计算共轭方向
-            rdotr = new_rdotr  # 更新
+            beta = new_rdotr / rdotr
+            p = r + beta * p
+            rdotr = new_rdotr
         return x
 
     def line_search(self, states, actions, advantage, old_log_prob, old_action_dists, max_vec):
@@ -177,7 +189,7 @@ class TRPO:
             # 将新参数更新到新策略中
             torch.nn.utils.convert_parameters.vector_to_parameters(new_parameters, new_policy_net.parameters())
             # 新策略的action输出
-            new_actions_dist = torch.distributions.Categorical(new_policy_net())
+            new_actions_dist = torch.distributions.Categorical(new_policy_net(states))
             # 计算新旧kl散度
             kl_div = torch.mean(torch.distributions.kl.kl_divergence(old_action_dists, new_actions_dist))
             # 计算新obj
@@ -187,17 +199,37 @@ class TRPO:
                 return new_parameters
         return old_parameters
 
+    def policy_learn(self, state_list, action_list, old_action_dists, old_log_probs,
+                     advantage):  # 更新策略函数
+        surrogate_obj = self.surrogate_loss(old_log_probs, log_probs(
+            self.policy_net, state_list, action_list), advantage)
+        grads = torch.autograd.grad(surrogate_obj, self.policy_net.parameters())
+        obj_grad = torch.cat([grad.view(-1) for grad in grads]).detach()
+        # 用共轭梯度法计算x = H^(-1)g
+        descent_direction = self.conjugate_gradient(obj_grad, state_list,
+                                                    old_action_dists)
+
+        Hd = self.hessian_matrix_vector_product(state_list, old_action_dists,
+                                                descent_direction)
+        max_coef = torch.sqrt(2 * self.kl_constraint /
+                              (torch.dot(descent_direction, Hd) + 1e-8))
+        new_para = self.line_search(state_list, action_list, advantage, old_log_probs,
+                                    old_action_dists,
+                                    descent_direction * max_coef)  # 线性搜索
+        torch.nn.utils.convert_parameters.vector_to_parameters(
+            new_para, self.policy_net.parameters())  # 用线性搜索后的参数更新策略
+
     def update(self, trajectory):
         '''
         根据trajectory，优化策略和价值网络
         :param transition_dict:
         :return:
         '''
-        state_list = torch.tensor(trajectory.state, dtype=torch.float)
-        next_state_list = torch.tensor(trajectory.next_state, dtype=torch.float)
-        action_list = torch.tensor(trajectory.action, dtype=torch.int64).view(1, -1)
-        reward_list = torch.tensor(trajectory.reward, dtype=torch.float).view(1, -1)
-        done_list = torch.tensor(trajectory.done, dtype=torch.float).view(1, -1)
+        state_list = torch.tensor(np.array(trajectory.state), dtype=torch.float)
+        action_list = torch.tensor(trajectory.action, dtype=torch.int64).view(-1, 1)
+        reward_list = torch.tensor(trajectory.reward, dtype=torch.float).view(-1, 1)
+        next_state_list = torch.tensor(np.array(trajectory.next_state), dtype=torch.float)
+        done_list = torch.tensor(trajectory.done, dtype=torch.float).view(-1, 1)
         # 计算当前网络的Q值
         td_target = reward_list + self.gamma * self.value_net(next_state_list) * (1 - done_list)
         # 计算当前时序差分误差
@@ -217,26 +249,9 @@ class TRPO:
         # 梯度下降
         self.value_optimizer.step()
 
-        # 策略优化
+        # 策略优化，策略不用反向传播，而是在信任阈里面搜索
         # 计算当前策略目标
-        surrogate_obj = self.surrogate_loss(old_log_probs, log_probs(self.policy_net, state_list, action_list), advantage)
-        # 计算当前policy_net的梯度值
-        grads = torch.autograd.grad(surrogate_obj, self.policy_net.parameters())
-        # 把梯度值改为向量
-        obj_grads = torch.cat([grad.view(-1) for grad in grads]).detach()
-        # 用共轭梯度计算x
-        descent_direction = self.conjugate_gradients(obj_grads, )
-        # 计算出最大步长(平方根(2*δ/(xT*H*x)))
-        max_coef = torch.sqrt(2 * self.kl_constraint / (torch.dot(descent_direction, Hd) + 1e-8))
-        # 利用线性搜索法计算出新的策略网络的参数
-        new_para = self.line_search(state_list, action_list, advantage, old_log_probs, old_action_dists,
-                                    descent_direction * max_coef)
-        # 把计算出的网络参数更新至actor网络中
-        torch.nn.utils.convert_parameters.vector_to_parameters(new_para, self.policy_net.parameters())  # 用线性搜索后的参数更新策略
-
-
-
-        print(surrogate_obj)
+        self.policy_learn(state_list, action_list, old_action_dists, old_log_probs, advantage)
 
 
 def log_probs(policy_net, states, actions):
@@ -245,36 +260,46 @@ def log_probs(policy_net, states, actions):
 
 def train(env, agent):
     return_list = []
-    for i in range(10):
-        with tqdm(total=int(num_episodes / 10), desc='Iteration %d' % i) as pbar:
-            for i_episode in range(int(num_episodes / 10)):
-                # trajectory的总回报
-                episode_return = 0
+    for i in range(epochs):
+        episode = int(num_episodes / epochs)
+        with tqdm(total=episode, desc='Iteration %d' % int(i+1)) as pbar:
+            for i_episode in range(episode):
                 # trajectory的字典
                 trajectory = Trajectory()
                 state = env.reset()
-                # 初始状态
-                state = state[0]
                 done = False
                 # 玩一局游戏，得到一个trajectory，直到游戏结束
                 while not done:
                     action = agent.take_action(state)
-                    next_state, reward, done, _, _ = env.step(action)
+                    next_state, reward, done, _ = env.step(action)
                     # 记录动作
                     trajectory.push(state, action, reward, done, next_state)
                     state = next_state
-                    episode_return += reward
-                return_list.append(episode_return)
+                # 将本局游戏的总reward放入return_list
+                return_list.append(np.sum(trajectory.reward))
                 agent.update(trajectory)
                 if (i_episode + 1) % 10 == 0:
+                    # 每玩10局打印
                     pbar.set_postfix({
                         'episode':
-                            '%d' % (num_episodes / 10 * i + i_episode + 1),
+                            '%d' % (episode * i + i_episode + 1),
                         'return':
                             '%.3f' % np.mean(return_list[-10:])
                     })
-                pbar.update(1)
+                    pbar.update(10)
+    return return_list
 
+def draw(return_list):
+    smooth_list=[]
+    for i in range(0, len(return_list), 10):
+        smooth_list.append(np.mean(return_list[i:i+10]))
+
+    episodes_list = list(range(len(smooth_list)))
+    plt.plot(episodes_list, smooth_list)
+    plt.xlabel('Episodes')
+    plt.ylabel('Returns')
+    plt.title('PPO on {}'.format(env_name))
+    plt.show()
 
 def init_env(env_name, mode):
     '''
@@ -283,14 +308,27 @@ def init_env(env_name, mode):
     :return:
     '''
     env = gym.make(env_name, render_mode=mode)
+    env.seed(0)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
     return env, state_dim, action_dim
 
 
+# 参数区
+learning_rate = 1e-3
+gamma = 0.98
+lam = 0.95
+kl_constraint = 0.00005
+env_name = "CartPole-v0"
+play_mode = "rgb_array"
+alaph=0.5
+
+num_episodes = 1000
+epochs = 20
+
 def main():
     env, state_dim, action_dim = init_env(env_name, play_mode)
-    agent = TRPO(state_dim, action_dim, learning_rate, gamma, lam, kl_constraint)
+    agent = TRPO(state_dim, action_dim, learning_rate, gamma, lam, kl_constraint, alaph)
     train(env, agent)
 
 
