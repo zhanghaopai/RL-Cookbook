@@ -114,7 +114,7 @@ class TRPO:
 
     def hessian_matrix_vector_product(self, states, old_action_dists, vector):
         """
-        计算hessian矩阵和一个向量v的乘积（Hv）：公式见《动手学强化学习》第11章TRPO算法的11.4节最后一个公式
+        计算hessian矩阵和一个向量v的乘积（Hv）
         这里要计算的Hessian矩阵：策略之间平均KL距离的的Hessian矩阵
         :param states: 新的策略下所历经的各种状态
         :param old_action_dists:
@@ -132,9 +132,8 @@ class TRPO:
         kl_grad_vector_product = torch.dot(kl_grad_vector, vector)
         # 计算KL散度的梯度值转置*v 关于旧策略参数θ的梯度值
         grad2 = torch.autograd.grad(kl_grad_vector_product, self.policy_net.parameters())
-        # 把输出结果转换成列向量？
+        # 把输出结果转换成列向量
         grad2_vector = torch.cat([grad.view(-1) for grad in grad2])
-        # print(grad2_vector.shape) # shape (898)
         return grad2_vector
 
     def surrogate_loss(self, old_log_probs, log_probs, advantage):
@@ -298,7 +297,7 @@ def draw(return_list):
     plt.plot(episodes_list, smooth_list)
     plt.xlabel('Episodes')
     plt.ylabel('Returns')
-    plt.title('PPO on {}'.format(env_name))
+    plt.title('TRPO on {}'.format(env_name))
     plt.show()
 
 def init_env(env_name, mode):
@@ -323,13 +322,14 @@ env_name = "CartPole-v0"
 play_mode = "rgb_array"
 alaph=0.5
 
-num_episodes = 1000
-epochs = 20
+num_episodes = 20000
+epochs = 400
 
 def main():
     env, state_dim, action_dim = init_env(env_name, play_mode)
     agent = TRPO(state_dim, action_dim, learning_rate, gamma, lam, kl_constraint, alaph)
-    train(env, agent)
+    return_list= train(env, agent)
+    draw(return_list)
 
 
 if __name__ == "__main__":
