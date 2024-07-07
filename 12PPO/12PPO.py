@@ -218,8 +218,8 @@ gamma = 0.96
 lam = 0.95
 eps = 0.2
 
-num_episodes = 2500
-epochs = 50
+num_episodes = 10000
+epochs = 200
 
 env_name = "CartPole-v0"
 play_mode = "rgb_array"
